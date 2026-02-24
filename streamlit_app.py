@@ -31,46 +31,47 @@ with tab_fut:
         st.info("⬅️ Upload Futures CSVs to continue.")
         combined_fut = pd.DataFrame()
     else:
-        dfs = []
+        dfs=[]
         for f in fut_files:
-            fn = f.name
-            m = re.search(r"_(\d{2})(\d{2})(\d{4})_(\d{2})(\d{2})(\d{2})", fn)
-            base = datetime.now()
+            fn=f.name
+            m=re.search(r"_(\d{2})(\d{2})(\d{4})_(\d{2})(\d{2})(\d{2})",fn)
+            base=datetime.now()
             if m:
-                d,mo,y,h,mi,s = m.groups()
-                base = datetime(int(y),int(mo),int(d),int(h),int(mi),int(s))
-            df = pd.read_csv(f)
-            df["timestamp"] = base + pd.to_timedelta(np.arange(len(df))*5, unit="min")
+                d,mo,y,h,mi,s=m.groups()
+                base=datetime(int(y),int(mo),int(d),int(h),int(mi),int(s))
+            df=pd.read_csv(f)
+            df["timestamp"]=base+pd.to_timedelta(np.arange(len(df))*5,unit="min")
             dfs.append(df)
-        fut_df = pd.concat(dfs, ignore_index=True)
+        fut_df=pd.concat(dfs,ignore_index=True)
         if "expiryDate" not in fut_df:
             st.error("❌ Missing 'expiryDate' column.")
             st.stop()
-        expiry_opts = sorted(fut_df["expiryDate"].unique())
-        expiry = st.selectbox("Select Expiry Date", expiry_opts)
-        fut_df = fut_df[fut_df["expiryDate"] == expiry].copy()
+        expiry_opts=sorted(fut_df["expiryDate"].unique())
+        expiry=st.selectbox("Select Expiry Date",expiry_opts)
+        fut_df=fut_df[fut_df["expiryDate"]==expiry].copy()
 
-        def compute(df, metric):
-            df = df.sort_values("timestamp")
-            out = pd.DataFrame()
-            out["time"] = df["timestamp"]
-            out[f"Δ {metric}"] = df[metric].diff()
-            out["Δ Price"] = df["lastPrice"].diff()
-            out["SMAΔ"] = out[f"Δ {metric}"].rolling(5,min_periods=1).mean()
-            out["RollCorr"] = out["Δ Price"].rolling(5).corr(out[f"Δ {metric}"])
-            out["Signal"] = np.where(out["RollCorr"]>0,
-                                     np.where(out["SMAΔ"]>0,"🟢 Bullish","⚪ Weak Up"),
-                                     np.where(out["SMAΔ"]<0,"🔴 Bearish","⚪ Neutral"))
+        def compute(df,metric):
+            df=df.sort_values("timestamp")
+            out=pd.DataFrame()
+            out["time"]=df["timestamp"]
+            out[f"Δ {metric}"]=df[metric].diff()
+            out["Δ Price"]=df["lastPrice"].diff()
+            out["SMAΔ"]=out[f"Δ {metric}"].rolling(5,min_periods=1).mean()
+            out["RollCorr"]=out["Δ Price"].rolling(5).corr(out[f"Δ {metric}"])
+            out["Signal"]=np.where(out["RollCorr"]>0,
+                                   np.where(out["SMAΔ"]>0,"🟢 Bullish","⚪ Weak Up"),
+                                   np.where(out["SMAΔ"]<0,"🔴 Bearish","⚪ Neutral"))
             return out
 
-        vol_df = compute(fut_df, "volume")
-        oi_df  = compute(fut_df, "openInterest")
-        turn_df= compute(fut_df, "totalTurnover")
+        vol_df=compute(fut_df,"volume")
+        oi_df=compute(fut_df,"openInterest")
+        turn_df=compute(fut_df,"totalTurnover")
 
-        combined_fut = pd.DataFrame({"time": vol_df["time"]})
+        combined_fut=pd.DataFrame({"time":vol_df["time"]})
         combined_fut["Vol_Signal"]=vol_df["Signal"]
         combined_fut["OI_Signal"]=oi_df["Signal"]
         combined_fut["Turn_Signal"]=turn_df["Signal"]
+
         def overall(r):
             vals=[r["Vol_Signal"],r["OI_Signal"],r["Turn_Signal"]]
             if all("🟢" in v for v in vals): return "🟢 Bullish"
@@ -84,11 +85,11 @@ with tab_fut:
 # ============================================================
 with tab_opt:
     st.subheader("📊 Option‑Chain Rule‑Based Signals")
-    opt_files = st.file_uploader("Upload Option‑Chain CSVs", type="csv",
-                                 accept_multiple_files=True)
+    opt_files = st.file_uploader("Upload Option‑Chain CSVs",
+                                 type="csv", accept_multiple_files=True)
     if not opt_files:
         st.info("⬅️ Upload Option CSVs to continue.")
-        opt_feat = pd.DataFrame()
+        opt_feat=pd.DataFrame()
     else:
         frames=[]
         for f in opt_files:
@@ -120,20 +121,30 @@ with tab_opt:
         st.dataframe(opt_feat.tail(10))
 
 # ============================================================
-# COMPOSITE TAB
+# COMPOSITE TAB  (safe merge_asof)
 # ============================================================
 with tab_comb:
     st.subheader("🪄 Composite Signals (Futures + Options)")
     if "combined_fut" not in locals() or combined_fut.empty or opt_feat.empty:
         st.warning("Upload both Futures and Options.")
         st.stop()
+
     fut_m=combined_fut.copy()
     opt_m=opt_feat.copy()
-    fut_m["time_key"]=pd.to_datetime(fut_m["time"],errors="coerce").dt.tz_localize(None)
-    opt_m["time_key"]=pd.to_datetime(opt_m["timestamp"],errors="coerce").dt.tz_localize(None)
-    fut_m=fut_m.dropna(subset=["time_key"]).sort_values("time_key")
-    opt_m=opt_m.dropna(subset=["time_key"]).sort_values("time_key")
-    merged=pd.merge_asof(fut_m,opt_m,on="time_key",direction="nearest")
+
+    fut_m["time_key"]=pd.to_datetime(fut_m["time"],errors="coerce")
+    opt_m["time_key"]=pd.to_datetime(opt_m["timestamp"],errors="coerce")
+    fut_m["time_key"]=fut_m["time_key"].dt.tz_localize(None)
+    opt_m["time_key"]=opt_m["time_key"].dt.tz_localize(None)
+    fut_m["time_key"]=fut_m["time_key"].astype("datetime64[ns]")
+    opt_m["time_key"]=opt_m["time_key"].astype("datetime64[ns]")
+    fut_m=fut_m.sort_values("time_key").reset_index(drop=True)
+    opt_m=opt_m.sort_values("time_key").reset_index(drop=True)
+
+    merged=pd.merge_asof(
+        fut_m,opt_m,on="time_key",direction="nearest",allow_exact_matches=True
+    )
+
     merged["Momentum_Score"]=abs(merged["ΔPrice_CE"].fillna(0))*50
     def comp_sig(r):
         f=r["Overall_Fut_Signal"]; m=r["Momentum_Score"]
@@ -147,22 +158,22 @@ with tab_comb:
 # FUTURES CHART TAB  (Chart‑2 logic)
 # ============================================================
 with tab_fut_chart:
-    st.subheader("📉 Futures Chart – Clean Δ Volume vs Last Price (Chart 2 style)")
-    files = st.file_uploader("Upload Futures CSV(s) for Chart", type="csv",
-                             accept_multiple_files=True, key="fut_chart_up")
+    st.subheader("📉 Futures Chart – Clean Δ Volume vs Last Price (Chart 2)")
+    files=st.file_uploader("Upload Futures CSV (s)",type="csv",
+                           accept_multiple_files=True,key="fut_chart_up")
     if not files:
         st.info("Upload CSV to plot.")
         st.stop()
-    dfs, labels, times = [], [], []
+    dfs,labels,times=[],[],[]
     for f in files:
         fn=f.name
         m=re.search(r"_(\d{2})(\d{2})(\d{4})_(\d{2})(\d{2})(\d{2})",fn)
-        base=datetime.now(); label=f.name
+        base=datetime.now(); lbl=fn
         if m:
             d,mo,y,h,mi,s=m.groups()
             base=datetime(int(y),int(mo),int(d),int(h),int(mi),int(s))
-            label=f"{h}:{mi}"
-        labels.append(label); times.append(base)
+            lbl=f"{h}:{mi}"
+        labels.append(lbl); times.append(base)
         df=pd.read_csv(f)
         df["timestamp"]=base+pd.to_timedelta(np.arange(len(df))*5,unit="min")
         dfs.append(df)
@@ -188,22 +199,20 @@ with tab_fut_chart:
     df_sum=pd.DataFrame(rows)
     df_sum["Δ Volume"]=df_sum["volume"].diff()
     df_sum["Δ Price"]=df_sum["last_price"].diff()
-    axis_type=st.radio("Y‑axis scale",["linear","log"],horizontal=True)
+    axis_type=st.radio("Y‑axis scale",["linear","log"],horizontal=True,key="futchart_scale")
     config={"scrollZoom":True,"displaylogo":False}
     fig=go.Figure()
-    fig.add_trace(go.Bar(x=df_sum["time"],y=df_sum["Δ Volume"],name="Δ Volume",
-                         marker_color="orange",opacity=0.6,yaxis="y2"))
+    fig.add_trace(go.Bar(x=df_sum["time"],y=df_sum["Δ Volume"],
+                         name="Δ Volume",marker_color="orange",opacity=0.6,yaxis="y2"))
     fig.add_trace(go.Scatter(x=df_sum["time"],y=df_sum["last_price"],
                              mode="lines+markers",line=dict(color="blue"),
                              name="Last Price",yaxis="y1"))
-    fig.update_layout(
-        height=600,margin=dict(l=60,r=40,t=60,b=60),
-        xaxis=dict(title="Capture Time (HH:MM)",rangeslider=dict(visible=True)),
-        yaxis=dict(domain=[0.45,1],title="Last Price"),
-        yaxis2=dict(domain=[0,0.35],title="Δ Volume",type=axis_type),
-        legend=dict(orientation="h"),hovermode="x unified",
-        title="Chart 2 – Clean Δ Volume vs Last Price"
-    )
+    fig.update_layout(height=600,margin=dict(l=60,r=40,t=60,b=60),
+                      xaxis=dict(title="Capture Time (HH:MM)",rangeslider=dict(visible=True)),
+                      yaxis=dict(domain=[0.45,1.0],title="Last Price"),
+                      yaxis2=dict(domain=[0,0.35],title="Δ Volume",type=axis_type),
+                      title="Chart 2 – Clean Δ Volume vs Last Price",
+                      legend=dict(orientation="h"),hovermode="x unified")
     st.plotly_chart(fig,use_container_width=True,config=config)
 
 # ============================================================
@@ -211,8 +220,8 @@ with tab_fut_chart:
 # ============================================================
 with tab_opt_chart:
     st.subheader("📈 Options Chart Viewer (Δ metrics per strike)")
-    files = st.file_uploader("Upload Option CSVs (_DDMMYYYY_HHMMSS.csv)",
-                             type=["csv"],accept_multiple_files=True,key="opt_chart_up")
+    files=st.file_uploader("Upload Option CSVs (_DDMMYYYY_HHMMSS.csv)",
+                           type=["csv"],accept_multiple_files=True,key="opt_chart_up")
     if not files:
         st.info("Upload option CSVs to plot."); st.stop()
 
@@ -246,6 +255,4 @@ with tab_opt_chart:
                         title=f"{opt} {metric} for Strike {strike}")
             st.plotly_chart(fig,use_container_width=True)
 
-st.caption("✅ All modules integrated — Futures + Options analysis + Chart visuals.")
-
-
+st.caption("✅ All modules integrated — Futures + Options analysis with safe Composite merge and two chart tabs.")
