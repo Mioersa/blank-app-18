@@ -25,7 +25,7 @@ tab_fut, tab_opt, tab_comb, tab_fut_chart, tab_opt_chart = st.tabs([
 ])
 
 # ============================================================
-# (1) FUTURES TAB — existing logic retained
+# (1) FUTURES TAB
 # ============================================================
 with tab_fut:
     st.subheader("📈 Futures Multi‑Metric Analysis")
@@ -89,7 +89,7 @@ with tab_fut:
 
         st.dataframe(combined_fut.tail(20))
 
-        # quick inline chart (original)
+        # inline quick chart
         fig=go.Figure()
         fig.add_trace(go.Scatter(x=vol_df["time"],y=vol_df["SMAΔ"],name="Δ Volume SMA",line=dict(color="orange")))
         fig.add_trace(go.Scatter(x=oi_df["time"],y=oi_df["SMAΔ"],name="Δ OI SMA",line=dict(color="teal")))
@@ -98,7 +98,7 @@ with tab_fut:
         st.plotly_chart(fig,use_container_width=True)
 
 # ============================================================
-# (2) OPTIONS TAB — existing logic retained
+# (2) OPTIONS TAB
 # ============================================================
 with tab_opt:
     st.subheader("📊 Option‑Chain Rule‑Based Signals")
@@ -141,19 +141,27 @@ with tab_opt:
         st.dataframe(opt_feat.tail(10))
 
 # ============================================================
-# (3) COMPOSITE TAB — same logic retained
+# (3) COMPOSITE TAB — FIXED MERGE_ASOF (dtype‑safe)
 # ============================================================
 with tab_comb:
     st.subheader("🪄 Composite Signals — Futures + Options Alignment")
+
     if "combined_fut" not in locals() or combined_fut.empty or opt_feat.empty:
         st.warning("Upload both Futures and Options files first.")
         st.stop()
 
     fut_m=combined_fut.copy()
     opt_m=opt_feat.copy()
+
+    # --- FIXED dtype normalization for merge_asof
     fut_m["time_key"]=pd.to_datetime(fut_m["time"],errors="coerce").dt.tz_localize(None)
     opt_m["time_key"]=pd.to_datetime(opt_m["timestamp"],errors="coerce").dt.tz_localize(None)
-    fut_m, opt_m = fut_m.sort_values("time_key"), opt_m.sort_values("time_key")
+
+    fut_m["time_key"]=fut_m["time_key"].astype("datetime64[ns]")
+    opt_m["time_key"]=opt_m["time_key"].astype("datetime64[ns]")
+
+    fut_m=fut_m.dropna(subset=["time_key"]).sort_values("time_key")
+    opt_m=opt_m.dropna(subset=["time_key"]).sort_values("time_key")
 
     merged=pd.merge_asof(fut_m,opt_m,on="time_key",direction="nearest",allow_exact_matches=True)
 
@@ -163,12 +171,13 @@ with tab_comb:
         if "🟢" in f and m>20: return "🟢 Confirmed Uptrend"
         if "🔴" in f and m>20: return "🔴 Confirmed Downtrend"
         return "⚪ Mixed/Neutral"
+
     merged["Momentum_Score"]=abs(merged.get("ΔPrice_CE",0))*50
     merged["Composite_Signal"]=merged.apply(comp_sig,axis=1)
     st.dataframe(merged[["time","Overall_Fut_Signal","Momentum_Score","Composite_Signal"]])
 
 # ============================================================
-# (4) FUTURES CHART TAB — taken from your second script
+# (4) FUTURES CHART TAB
 # ============================================================
 with tab_fut_chart:
     st.subheader("📉 Futures Chart – Δ Volume vs Last Price")
@@ -207,7 +216,7 @@ with tab_fut_chart:
     st.plotly_chart(fig,use_container_width=True)
 
 # ============================================================
-# (5) OPTIONS CHART TAB — taken from your second script
+# (5) OPTIONS CHART TAB
 # ============================================================
 with tab_opt_chart:
     st.subheader("📈 Options Chart Viewer – Δ Metrics per Strike")
@@ -245,4 +254,4 @@ with tab_opt_chart:
             fig=px.line(sub,x="timestamp",y=col,markers=True,title=f"{opt} {metric} for Strike {strike}")
             st.plotly_chart(fig,use_container_width=True)
 
-st.caption("✅ Full Engine — Futures + Options logic retained with added Charts for visualization.")
+st.caption("✅ Full Engine — Futures + Options logic retained, safe merge_asof fixed, and charts added.")
