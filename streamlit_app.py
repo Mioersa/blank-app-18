@@ -10,7 +10,7 @@ st.set_page_config(page_title="🧩 Futures + Options Intraday Signal Engine", l
 st.title("🧩 Futures + Options Intraday Signal Engine")
 
 # ============================================================
-#  SIDEBAR CONTROLS
+# Sidebar controls
 # ============================================================
 st.sidebar.header("Global Parameters")
 rolling_n = st.sidebar.number_input("Rolling window (mins)", 3, 60, 5)
@@ -20,92 +20,111 @@ num_strikes = st.sidebar.number_input("Top Option strikes by OI", 1, 30, 6)
 tab_fut, tab_opt, tab_comb = st.tabs(["📈 Futures", "📊 Options", "🪄 Composite Signals"])
 
 # ============================================================
-#  FUTURES TAB
+# FUTURES TAB (fixed version)
 # ============================================================
 with tab_fut:
     st.subheader("📈 Futures Multi‑Metric Analysis")
+    fut_files = st.file_uploader(
+        "Upload 5‑min Futures CSVs", type="csv", accept_multiple_files=True
+    )
 
-    fut_files = st.file_uploader("Upload 5‑min Futures CSVs", type="csv", accept_multiple_files=True)
     if not fut_files:
         st.info("⬅️ Upload Futures CSVs to continue.")
-        fut_df = vol_df = oi_df = turn_df = combined_fut = pd.DataFrame()
+        combined_fut = pd.DataFrame()
     else:
-        dfs, labels, times = [], [], []
-        for upl in fut_files:
-            fn = upl.name
+        # -------- read & prep --------
+        dfs = []
+        for uploaded in fut_files:
+            fn = uploaded.name
             m = re.search(r"_(\d{2})(\d{2})(\d{4})_(\d{2})(\d{2})(\d{2})\.csv$", fn)
             if m:
                 dd, mm, yyyy, HH, MM, SS = m.groups()
-                base = datetime(int(yyyy), int(mm), int(dd), int(HH), int(MM), int(SS))
-                label = f"{HH}:{MM}"
+                base_time = datetime(int(yyyy), int(mm), int(dd), int(HH), int(MM), int(SS))
             else:
-                base, label = datetime.now(), upl.name
-            times.append(base)
-            labels.append(label)
-            df = pd.read_csv(upl)
-            df["timestamp"] = base + pd.to_timedelta(np.arange(len(df))*5, unit="min")
+                base_time = datetime.now()
+            df = pd.read_csv(uploaded)
+            df["timestamp"] = base_time + pd.to_timedelta(np.arange(len(df)) * 5, unit="min")
             dfs.append(df)
 
-        fut_df = pd.concat(dfs)
+        fut_df = pd.concat(dfs, ignore_index=True)
+
+        if "expiryDate" not in fut_df.columns:
+            st.error("❌ Column 'expiryDate' not found in Futures data.")
+            st.stop()
+
         expiry_opts = sorted(fut_df["expiryDate"].unique())
         expiry = st.selectbox("Select expiry", expiry_opts)
-        fut_df = fut_df[fut_df["expiryDate"] == expiry]
+        fut_df = fut_df[fut_df["expiryDate"] == expiry].copy()
 
-        # ---- metric computation
-        def compute_ind(df, metric):
+        # ---------- compute indicators ----------
+        def compute_indicators(df, metric):
             if metric not in df.columns:
                 return pd.DataFrame()
-            recs = []
-            for lbl, base in zip(labels, times):
-                sub = df.copy()
-                val = sub[metric].iloc[0]
-                price = sub["lastPrice"].iloc[-1]
-                recs.append({"time": lbl, metric: val, "Δ Price": sub["lastPrice"].diff().sum()})
-            out = pd.DataFrame(recs)
-            out[f"Δ {metric}"] = out[metric].diff()
-            out["SMAΔ"] = out[f"Δ {metric}"].rolling(3).mean()
-            out["Signal"] = np.where(out["SMAΔ"]>0, "🟢 Bullish",
-                                     np.where(out["SMAΔ"]<0,"🔴 Bearish","⚪ Neutral"))
+            df = df.sort_values("timestamp").reset_index(drop=True)
+            out = pd.DataFrame()
+            out["time"] = df["timestamp"]
+            out[f"Δ {metric}"] = df[metric].diff()
+            out["Δ Price"] = df["lastPrice"].diff()
+            out["SMAΔ"] = out[f"Δ {metric}"].rolling(5, min_periods=1).mean()
+            out["RollCorr"] = out["Δ Price"].rolling(5).corr(out[f"Δ {metric}"])
+            out["Signal"] = np.where(
+                out["RollCorr"] > 0,
+                np.where(out["SMAΔ"] > 0, "🟢 Bullish", "⚪ Weak Up"),
+                np.where(out["SMAΔ"] < 0, "🔴 Bearish", "⚪ Neutral"),
+            )
             return out
 
-        vol_df = compute_ind(fut_df, "volume")
-        oi_df = compute_ind(fut_df, "openInterest")
-        turn_df = compute_ind(fut_df, "totalTurnover")
+        vol_df = compute_indicators(fut_df, "volume")
+        oi_df = compute_indicators(fut_df, "openInterest")
+        turn_df = compute_indicators(fut_df, "totalTurnover")
 
+        # ---------- merge + overall signal ----------
         combined_fut = pd.DataFrame({"time": vol_df["time"]})
-        combined_fut["Vol_Signal"]=vol_df["Signal"]
-        combined_fut["OI_Signal"]=oi_df["Signal"]
-        combined_fut["Turn_Signal"]=turn_df["Signal"]
+        combined_fut["Vol_Signal"] = vol_df["Signal"]
+        combined_fut["OI_Signal"] = oi_df["Signal"]
+        combined_fut["Turn_Signal"] = turn_df["Signal"]
 
         def overall(r):
-            vals=[r["Vol_Signal"],r["OI_Signal"],r["Turn_Signal"]]
-            if all(v=="🟢 Bullish" for v in vals): return "🟢 Bullish"
-            if all(v=="🔴 Bearish" for v in vals): return "🔴 Bearish"
+            vals = [r.get("Vol_Signal"), r.get("OI_Signal"), r.get("Turn_Signal")]
+            if all(v and "🟢" in v for v in vals):
+                return "🟢 Bullish"
+            if all(v and "🔴" in v for v in vals):
+                return "🔴 Bearish"
             return "⚪ Neutral"
-        combined_fut["Overall_Fut_Signal"]=combined_fut.apply(overall,axis=1)
-        st.dataframe(combined_fut)
+
+        combined_fut["Overall_Fut_Signal"] = combined_fut.apply(overall, axis=1)
+
+        st.dataframe(combined_fut.tail(20))
+        # quick chart
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=vol_df["time"], y=vol_df["SMAΔ"], name="Δ Volume SMA", line=dict(color="orange")))
+        fig.add_trace(go.Scatter(x=oi_df["time"], y=oi_df["SMAΔ"], name="Δ OI SMA", line=dict(color="teal")))
+        fig.add_trace(go.Scatter(x=turn_df["time"], y=turn_df["SMAΔ"], name="Δ Turnover SMA", line=dict(color="purple")))
+        fig.update_layout(title="Rolling Δ Metrics (Volume / OI / Turnover)", height=400, margin=dict(l=50, r=30, t=50, b=40))
+        st.plotly_chart(fig, use_container_width=True)
 
 # ============================================================
-#  OPTIONS TAB
+# OPTIONS TAB
 # ============================================================
 with tab_opt:
     st.subheader("📊 Option‑Chain Rule‑Based Signals")
 
-    opt_files = st.file_uploader("Upload 5‑min Option‑Chain CSVs", type="csv", accept_multiple_files=True)
+    opt_files = st.file_uploader(
+        "Upload 5‑min Option‑Chain CSVs", type="csv", accept_multiple_files=True
+    )
     if not opt_files:
         st.info("⬅️ Upload Option CSVs to continue.")
         opt_feat = pd.DataFrame()
     else:
         frames=[]
         for f in opt_files:
-            base = f.name.replace(".csv","")
+            base=f.name.replace(".csv","")
             try:
-                ts = datetime.strptime(base.split("_")[-2]+"_"+base.split("_")[-1],"%d%m%Y_%H%M%S")
-            except Exception:
-                ts = datetime.now()
+                ts=datetime.strptime(base.split("_")[-2]+"_"+base.split("_")[-1],"%d%m%Y_%H%M%S")
+            except Exception: ts=datetime.now()
             d=pd.read_csv(f); d["timestamp"]=ts; frames.append(d)
-        raw=pd.concat(frames)
-        df=raw.copy()
+        df=pd.concat(frames, ignore_index=True)
+
         df=df[(df["CE_buyPrice1"]>0)&(df["CE_sellPrice1"]>0)]
         df["mid_CE"]=(df["CE_buyPrice1"]+df["CE_sellPrice1"])/2
         df["mid_PE"]=(df["PE_buyPrice1"]+df["PE_sellPrice1"])/2
@@ -128,7 +147,7 @@ with tab_opt:
         agg["ΔPrice_CE"]=agg["CE_lastPrice"].diff()
         agg["ΔOI_CE"]=agg["CE_changeinOpenInterest"].diff()
         agg["ΔIV"]=agg["CE_impliedVolatility"].diff()
-        agg["PCR_OI"]=agg["PE_changeinOpenInterest"] / (agg["CE_changeinOpenInterest"].replace(0,np.nan))
+        agg["PCR_OI"]=agg["PE_changeinOpenInterest"]/(agg["CE_changeinOpenInterest"].replace(0,np.nan))
         agg["Volume_spike"]=(agg["CE_totalTradedVolume"]+agg["PE_totalTradedVolume"]) / \
                             (agg["CE_totalTradedVolume"]+agg["PE_totalTradedVolume"]).rolling(rolling_n).mean()
 
@@ -152,7 +171,7 @@ with tab_opt:
         st.dataframe(opt_feat.tail(10))
 
 # ============================================================
-#  COMPOSITE TAB
+# COMPOSITE TAB
 # ============================================================
 with tab_comb:
     st.subheader("🪄 Composite Signals — Futures + Options Alignment")
@@ -161,35 +180,28 @@ with tab_comb:
         st.warning("Upload both Futures and Options files first.")
         st.stop()
 
-    # ========================================================
-    #  FIXED merge_asof section
-    # ========================================================
-    fut_m = combined_fut.copy()
-    opt_m = opt_feat.copy()
+    fut_m=combined_fut.copy()
+    opt_m=opt_feat.copy()
 
     def to_datetime_key(val):
-        if isinstance(val, str):
-            return pd.to_datetime(val, format="%H:%M", errors="coerce")
-        return pd.to_datetime(val, errors="coerce")
+        if isinstance(val,str):
+            return pd.to_datetime(val,format="%Y-%m-%d %H:%M:%S",errors="coerce")
+        return pd.to_datetime(val,errors="coerce")
 
-    fut_m["time_key"] = fut_m["time"].apply(to_datetime_key).dt.tz_localize(None)
-    opt_m["time_key"] = pd.to_datetime(opt_m["timestamp"], errors="coerce").dt.tz_localize(None)
+    fut_m["time_key"]=pd.to_datetime(fut_m["time"],errors="coerce").dt.tz_localize(None)
+    opt_m["time_key"]=pd.to_datetime(opt_m["timestamp"],errors="coerce").dt.tz_localize(None)
 
-    fut_m = fut_m.dropna(subset=["time_key"]).sort_values("time_key")
-    opt_m = opt_m.dropna(subset=["time_key"]).sort_values("time_key")
-    fut_m["time_key"] = fut_m["time_key"].astype("datetime64[ns]")
-    opt_m["time_key"] = opt_m["time_key"].astype("datetime64[ns]")
+    fut_m=fut_m.dropna(subset=["time_key"]).sort_values("time_key")
+    opt_m=opt_m.dropna(subset=["time_key"]).sort_values("time_key")
 
-    merged = pd.merge_asof(
-        fut_m, opt_m, on="time_key", direction="nearest", allow_exact_matches=True
-    )
+    fut_m["time_key"]=fut_m["time_key"].astype("datetime64[ns]")
+    opt_m["time_key"]=opt_m["time_key"].astype("datetime64[ns]")
 
-    # ========================================================
-    #  Composite logic
-    # ========================================================
+    merged=pd.merge_asof(fut_m,opt_m,on="time_key",direction="nearest",allow_exact_matches=True)
+
+    # ---- logic
     def comp_sig(r):
-        f = r["Overall_Fut_Signal"]
-        b = r["bias"]
+        f=r["Overall_Fut_Signal"]; b=r["bias"]
         if f.startswith("🟢") and b=="bullish": return "🟢 Confirmed Uptrend"
         if f.startswith("🔴") and b=="bearish": return "🔴 Confirmed Downtrend"
         if f.startswith("🟢") and b=="bearish": return "🟠 Futures↑ / Opts Bearish (Divergent)"
@@ -197,12 +209,10 @@ with tab_comb:
         return "⚪ Neutral/Unclear"
 
     def momentum_score(r):
-        sc=(
-            abs(r.get("ΔPrice_CE",0))*50+
+        sc=(abs(r.get("ΔPrice_CE",0))*50+
             abs(r.get("ΔOI_CE",0))*0.01+
             abs(r.get("ΔIV",0))*30+
-            (r.get("Volume_spike",0)-1)*10
-        )
+            (r.get("Volume_spike",0)-1)*10)
         return round(np.clip(sc,0,100),1)
 
     merged["Momentum_Score"]=merged.apply(momentum_score,axis=1)
@@ -218,10 +228,12 @@ with tab_comb:
     st.plotly_chart(fig,use_container_width=True)
 
     st.download_button(
-        "⬇️ Download Composite Signals",
+        "⬇️ Download Composite Signals",
         merged[cols_to_show].to_csv(index=False).encode("utf‑8"),
         "composite_signals.csv",
         "text/csv"
     )
 
 st.caption("Fusion engine combines Futures and Options bias + momentum for clear directional insights.")
+
+
